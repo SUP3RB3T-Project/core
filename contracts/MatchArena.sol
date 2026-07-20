@@ -60,7 +60,7 @@ contract MatchArena is
 
     event TokenWhitelisted(address indexed token, bool allowed);
     event MatchCreated(uint256 indexed id, address indexed player1, address indexed player2, address token, uint128 stake, uint64 acceptDeadline, uint64 playWindow);
-    event MatchAccepted(uint256 indexed id, uint64 playDeadline);
+    event MatchAccepted(uint256 indexed id, address indexed player2, uint64 playDeadline);
     event MatchResolved(uint256 indexed id, Outcome outcome, address winner, uint256 payout, uint256 fee);
     event MatchCancelled(uint256 indexed id, string reason);
     event Withdrawn(address indexed token, address indexed to, uint256 amount);
@@ -140,7 +140,8 @@ contract MatchArena is
         address player1, address token, address opponent, uint128 stake, uint64 acceptWindow, uint64 playWindow
     ) internal returns (uint256 id) {
         if (!whitelisted[token]) revert TokenNotAllowed();
-        if (stake == 0 || opponent == address(0) || opponent == player1 || player1 == address(0)
+        // opponent == address(0) means an OPEN lobby: anyone but the creator may join.
+        if (stake == 0 || opponent == player1 || player1 == address(0)
             || acceptWindow == 0 || playWindow == 0) revert InvalidParams();
 
         id = nextMatchId++;
@@ -163,14 +164,22 @@ contract MatchArena is
     function _accept(uint256 id, address accepter) internal {
         Match storage m = matches[id];
         if (m.status != Status.Open) revert BadState();
-        if (accepter != m.player2) revert NotParticipant();
         if (block.timestamp > m.acceptDeadline) revert DeadlinePassed();
+
+        if (m.player2 == address(0)) {
+            // OPEN lobby: the first joiner (not the creator) becomes player2.
+            if (accepter == m.player1) revert NotParticipant();
+            m.player2 = accepter;
+        } else if (accepter != m.player2) {
+            // directed challenge: only the named opponent may accept
+            revert NotParticipant();
+        }
 
         m.status = Status.Active;
         m.playDeadline = uint64(block.timestamp) + m.playWindow;
 
         _pullStake(m.token, msg.sender, m.stake);
-        emit MatchAccepted(id, m.playDeadline);
+        emit MatchAccepted(id, m.player2, m.playDeadline);
     }
 
     function resolveMatch(uint256 id, Outcome outcome) external onlyResolver nonReentrant {
